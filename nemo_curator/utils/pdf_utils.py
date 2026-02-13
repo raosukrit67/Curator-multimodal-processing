@@ -23,7 +23,7 @@ from PIL import Image
 
 
 def pdf_page_to_image(pdf_path: str, page_num: int, dpi: int = 300) -> Image.Image:
-    """Convert a PDF page to a PIL Image.
+    """Convert a PDF page to a PIL Image using PyMuPDF (Fitz).
 
     Args:
         pdf_path: Path to the PDF file
@@ -34,23 +34,39 @@ def pdf_page_to_image(pdf_path: str, page_num: int, dpi: int = 300) -> Image.Ima
         PIL Image of the page
     """
     try:
-        from pdf2image import convert_from_path
+        import fitz  # PyMuPDF
     except ImportError as exc:
-        msg = "pdf2image is required for PDF to image conversion. Install with: pip install pdf2image"
+        msg = "pymupdf is required for PDF to image conversion. Install with: pip install pymupdf"
         raise ImportError(msg) from exc
 
-    # Convert single page
-    images = convert_from_path(pdf_path, dpi=dpi, first_page=page_num + 1, last_page=page_num + 1)
+    try:
+        doc = fitz.open(pdf_path)
 
-    if not images:
-        msg = f"Failed to convert page {page_num} from {pdf_path}"
-        raise ValueError(msg)
+        if page_num < 0 or page_num >= len(doc):
+            doc.close()
+            msg = f"Page {page_num} out of range for {pdf_path} (total pages: {len(doc)})"
+            raise ValueError(msg)
 
-    return images[0]
+        page = doc[page_num]
+
+        # Render page to pixmap at specified DPI
+        zoom = dpi / 72  # 72 is default DPI
+        mat = fitz.Matrix(zoom, zoom)
+        pix = page.get_pixmap(matrix=mat)
+
+        # Convert to PIL Image
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+
+        doc.close()
+        return img
+
+    except Exception as exc:
+        msg = f"Failed to convert page {page_num} from {pdf_path}: {exc}"
+        raise ValueError(msg) from exc
 
 
 def pdf_to_images(pdf_path: str, dpi: int = 300) -> list[Image.Image]:
-    """Convert all pages of a PDF to PIL Images.
+    """Convert all pages of a PDF to PIL Images using PyMuPDF (Fitz).
 
     Args:
         pdf_path: Path to the PDF file
@@ -60,12 +76,26 @@ def pdf_to_images(pdf_path: str, dpi: int = 300) -> list[Image.Image]:
         List of PIL Images, one per page
     """
     try:
-        from pdf2image import convert_from_path
+        import fitz  # PyMuPDF
     except ImportError as exc:
-        msg = "pdf2image is required for PDF to image conversion. Install with: pip install pdf2image"
+        msg = "pymupdf is required for PDF to image conversion. Install with: pip install pymupdf"
         raise ImportError(msg) from exc
 
-    return convert_from_path(pdf_path, dpi=dpi)
+    doc = fitz.open(pdf_path)
+    images = []
+
+    # Render each page to pixmap at specified DPI
+    zoom = dpi / 72  # 72 is default DPI
+    mat = fitz.Matrix(zoom, zoom)
+
+    for page in doc:
+        pix = page.get_pixmap(matrix=mat)
+        # Convert to PIL Image
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        images.append(img)
+
+    doc.close()
+    return images
 
 
 def image_to_base64(image: Image.Image, format: str = "PNG") -> str:

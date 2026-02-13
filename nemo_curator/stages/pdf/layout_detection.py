@@ -12,7 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Stage for detecting document layout using vision-language models."""
+"""Stage for detecting document layout using vision-language models.
+
+This module uses vLLM for inference with vision-language models (VLMs).
+Note: vLLM uses the same LLM class for both language-only models and
+vision-language models (VLMs) - this is the correct and intended usage.
+"""
 
 import json
 import time
@@ -41,13 +46,17 @@ except ImportError:
 
 
 class LayoutDetectionStage(ProcessingStage[DocumentBatch, DocumentBatch]):
-    """Detect document layout using vision-language model via vLLM.
+    """Detect document layout using vision-language model (VLM) via vLLM.
 
     This stage processes page images through a vision-language model to detect
     document objects (text blocks, tables, images, etc.) with bounding boxes.
 
+    The model used (nvidia/nemotron-parse) is a Vision-Language Model (VLM) that
+    processes both text and images. vLLM's LLM class handles both standard LLMs
+    and VLMs with multimodal capabilities.
+
     Args:
-        model_identifier: HuggingFace model ID (default: "nvidia/nemoretriever-parse")
+        model_identifier: HuggingFace VLM model ID (default: "nvidia/nemotron-parse")
         page_images_field: Column containing page images (default: "page_images")
         output_field: Column for storing layout objects (default: "layout_objects")
         max_tokens: Maximum tokens for generation (default: 3500)
@@ -60,7 +69,7 @@ class LayoutDetectionStage(ProcessingStage[DocumentBatch, DocumentBatch]):
 
     def __init__(
         self,
-        model_identifier: str = "nvidia/nemoretriever-parse",
+        model_identifier: str = "nvidia/nemotron-parse",
         page_images_field: str = "page_images",
         output_field: str = "layout_objects",
         max_tokens: int = 3500,
@@ -111,6 +120,8 @@ class LayoutDetectionStage(ProcessingStage[DocumentBatch, DocumentBatch]):
         if not self.verbose and "disable_log_stats" not in vllm_init_kwargs:
             vllm_init_kwargs["disable_log_stats"] = True
 
+        # vLLM uses the LLM class for both standard LLMs and Vision-Language Models (VLMs)
+        # This is the correct usage for multimodal models like nvidia/nemotron-parse
         self.model = LLM(model=self.model_identifier, **vllm_init_kwargs)
 
         self.sampling_params = SamplingParams(

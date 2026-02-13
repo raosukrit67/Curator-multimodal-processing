@@ -17,11 +17,11 @@
 Multimodal PDF Data Extraction Pipeline
 
 This script implements a complete pipeline for extracting multimodal content
-(text, tables, images) from PDF documents using vision-language models with
+(text, tables, images) from PDF documents using vision-language models (VLMs) with
 local vLLM inference.
 
 Pipeline Stages:
-1. JSONLReaderStage - Read PDF paths from JSONL
+1. PDFReaderStage - Read PDF paths from JSONL
 2. PDFToImageStage - Convert PDF pages to images (300 DPI)
 3. LayoutDetectionStage - Detect layout with vision-language model (vLLM)
 4. BoundingBoxExtractionStage - Crop regions from images
@@ -30,7 +30,7 @@ Pipeline Stages:
 7. TextExtractionStage - Extract text from regions
 8. ImageExtractionStage - Crop and save images
 9. DeepAnalysisStage - Deep content analysis (vLLM)
-10. JSONLWriterStage - Write results (organized by modality)
+10. PDFWriterStage - Write results (organized by modality)
 
 Input:
     extraction_results/downloaded_pdfs.jsonl
@@ -63,8 +63,8 @@ from nemo_curator.stages.resources import Resources
 from nemo_curator.tasks import DocumentBatch, _EmptyTask
 
 
-class JSONLReaderStage(ProcessingStage[_EmptyTask, DocumentBatch]):
-    """Read PDF paths from JSONL file."""
+class PDFReaderStage(ProcessingStage[_EmptyTask, DocumentBatch]):
+    """Read PDF paths from JSONL file for PDF processing."""
 
     def __init__(self, input_path: str):
         self.input_path = input_path
@@ -105,8 +105,8 @@ class JSONLReaderStage(ProcessingStage[_EmptyTask, DocumentBatch]):
         return tasks
 
 
-class JSONLWriterStage(ProcessingStage[DocumentBatch, DocumentBatch]):
-    """Write extracted multimodal data to JSONL file."""
+class PDFWriterStage(ProcessingStage[DocumentBatch, DocumentBatch]):
+    """Write extracted multimodal PDF data to JSONL file."""
 
     def __init__(self, output_path: str):
         self.output_path = output_path
@@ -237,7 +237,7 @@ def create_extraction_pipeline(
     )
 
     # Stage 1: Read PDF paths
-    pipeline.add_stage(JSONLReaderStage(input_path=input_path))
+    pipeline.add_stage(PDFReaderStage(input_path=input_path))
 
     # Stage 2: Convert PDFs to images
     pipeline.add_stage(
@@ -251,7 +251,7 @@ def create_extraction_pipeline(
     # Stage 3: Detect layout with vLLM
     pipeline.add_stage(
         LayoutDetectionStage(
-            model_identifier="nvidia/nemoretriever-parse",
+            model_identifier="nvidia/nemotron-parse",
             page_images_field="page_images",
             output_field="layout_objects",
             max_tokens=3500,
@@ -315,7 +315,7 @@ def create_extraction_pipeline(
     )
 
     # Stage 10: Write results
-    pipeline.add_stage(JSONLWriterStage(output_path=output_path))
+    pipeline.add_stage(PDFWriterStage(output_path=output_path))
 
     return pipeline
 
