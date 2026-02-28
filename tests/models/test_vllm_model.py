@@ -62,8 +62,8 @@ class TestVLLMModel:
             model.get_tokenizer()
 
     @patch("nemo_curator.models.vllm_model.VLLM_AVAILABLE", True)
-    @patch("nemo_curator.models.vllm_model._get_gpu_count", return_value=1)
-    @patch("nemo_curator.models.vllm_model._get_max_model_len_from_config", return_value=4096)
+    @patch("nemo_curator.models.vllm_model.get_gpu_count", return_value=1)
+    @patch("nemo_curator.models.vllm_model.get_max_model_len_from_config", return_value=4096)
     @patch("nemo_curator.models.vllm_model.LLM")
     def test_generate_with_multimodal_data(self, mock_llm_cls, mock_config, mock_gpu):
         """Test generate() with multimodal prompt dicts."""
@@ -86,8 +86,8 @@ class TestVLLMModel:
         mock_llm.generate.assert_called_once()
 
     @patch("nemo_curator.models.vllm_model.VLLM_AVAILABLE", True)
-    @patch("nemo_curator.models.vllm_model._get_gpu_count", return_value=1)
-    @patch("nemo_curator.models.vllm_model._get_max_model_len_from_config", return_value=4096)
+    @patch("nemo_curator.models.vllm_model.get_gpu_count", return_value=1)
+    @patch("nemo_curator.models.vllm_model.get_max_model_len_from_config", return_value=4096)
     @patch("nemo_curator.models.vllm_model.LLM")
     def test_chat_with_image_content(self, mock_llm_cls, mock_config, mock_gpu):
         """Test chat() with image_url content blocks."""
@@ -119,8 +119,8 @@ class TestVLLMModel:
         mock_llm.chat.assert_called_once()
 
     @patch("nemo_curator.models.vllm_model.VLLM_AVAILABLE", True)
-    @patch("nemo_curator.models.vllm_model._get_gpu_count", return_value=1)
-    @patch("nemo_curator.models.vllm_model._get_max_model_len_from_config", return_value=4096)
+    @patch("nemo_curator.models.vllm_model.get_gpu_count", return_value=1)
+    @patch("nemo_curator.models.vllm_model.get_max_model_len_from_config", return_value=4096)
     @patch("nemo_curator.models.vllm_model.LLM")
     def test_setup_with_allowed_media_path(self, mock_llm_cls, mock_config, mock_gpu):
         """Test that allowed_local_media_path is passed to vLLM."""
@@ -134,8 +134,8 @@ class TestVLLMModel:
         assert call_kwargs["allowed_local_media_path"] == "/data/images"
 
     @patch("nemo_curator.models.vllm_model.VLLM_AVAILABLE", True)
-    @patch("nemo_curator.models.vllm_model._get_gpu_count", return_value=1)
-    @patch("nemo_curator.models.vllm_model._get_max_model_len_from_config", return_value=4096)
+    @patch("nemo_curator.models.vllm_model.get_gpu_count", return_value=1)
+    @patch("nemo_curator.models.vllm_model.get_max_model_len_from_config", return_value=4096)
     @patch("nemo_curator.models.vllm_model.LLM")
     def test_setup_with_extra_llm_kwargs(self, mock_llm_cls, mock_config, mock_gpu):
         """Test that extra_llm_kwargs are passed to vLLM."""

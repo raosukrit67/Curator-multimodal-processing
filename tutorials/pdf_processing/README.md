@@ -167,14 +167,62 @@ python 2_run_extraction.py --input data/raw/pdf_files.jsonl --output data/extrac
 Options:
 - `--parse-model` — Override Parse model (default: `nvidia/NVIDIA-Nemotron-Parse-v1.1`)
 - `--vl-model` — Override VL model (default: `nvidia/NVIDIA-Nemotron-Nano-12B-v2-VL-BF16`)
+- `--parse-prompt` — Parse prompt name from `prompts.py` or literal string (default: `NEMOTRON_PARSE_PROMPT`)
 - `--dpi` — PDF rendering resolution (default: 300)
 - `--include-tables-for-vl` — Also send tables to VL model for richer interpretation
 - `--model-cache-dir` — Custom cache directory for model weights
 
-### Step 3: Deduplicate
+### Customizing Prompts
+
+Prompts are defined in `nemo_curator/utils/prompts.py` as named constants. The pipeline resolves prompt names at runtime — pass a constant name and it's looked up from the module, or pass a literal string to use directly:
 
 ```bash
+# Use layout-only mode (no text extraction, faster)
+python 2_run_extraction.py --parse-prompt NEMOTRON_PARSE_LAYOUT_ONLY_PROMPT
+
+# Use a literal prompt string
+python 2_run_extraction.py --parse-prompt "</s><s><predict_bbox><output_markdown>"
+```
+
+VL prompts (for describing pictures, figures, charts) can be overridden programmatically when constructing the pipeline:
+
+```python
+from nemo_curator.stages.pdf import VisualAnalysisStage
+
+# Default — uses built-in per-type prompts from prompts.py
+VisualAnalysisStage(model_identifier="nvidia/...")
+
+# Custom prompts for Q&A-focused descriptions
+VisualAnalysisStage(
+    model_identifier="nvidia/...",
+    prompts_by_type={
+        "Picture": "Describe this image so a question can be asked about it.",
+        "Chart": "Extract the key data points from this chart as bullet points.",
+        "Figure": "Explain what this diagram shows step by step.",
+    },
+    default_prompt="What information does this visual content convey?",
+)
+```
+
+### Step 3: Deduplicate
+
+Two stages of deduplication, run in sequence:
+
+| Stage | Method | What it catches |
+|-------|--------|-----------------|
+| **Fuzzy dedup** | MinHash + LSH | Near-duplicate text (copy-paste, minor edits) |
+| **Semantic dedup** | Embeddings + clustering | Documents that say the same thing differently |
+
+```bash
+# Run both (default, needs GPU for embedding generation)
 python 3_remove_duplicates.py
+
+# Fuzzy dedup only (no GPU required)
+python 3_remove_duplicates.py --skip-semantic
+
+# Custom semantic dedup parameters
+python 3_remove_duplicates.py --embedding-model intfloat/e5-base-v2 \
+                              --n-clusters 20 --sem-eps 0.1
 ```
 
 ### Step 4: Quality Filter for Q&A Curation

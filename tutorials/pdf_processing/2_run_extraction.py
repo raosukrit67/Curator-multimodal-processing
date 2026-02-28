@@ -56,6 +56,7 @@ from nemo_curator.stages.pdf import (
 )
 from nemo_curator.stages.resources import Resources
 from nemo_curator.tasks import DocumentBatch, _EmptyTask
+from nemo_curator.utils import prompts
 
 
 class PDFReaderStage(ProcessingStage[_EmptyTask, DocumentBatch]):
@@ -137,11 +138,20 @@ class PDFWriterStage(ProcessingStage[DocumentBatch, DocumentBatch]):
         return None
 
 
+def resolve_prompt(name_or_value: str) -> str:
+    """Resolve a prompt by name from prompts module, or return as literal string."""
+    try:
+        return getattr(prompts, name_or_value)
+    except AttributeError:
+        return name_or_value
+
+
 def build_pipeline(
     input_path: str,
     output_path: str,
     parse_model: str = "nvidia/NVIDIA-Nemotron-Parse-v1.1",
     vl_model: str = "nvidia/NVIDIA-Nemotron-Nano-12B-v2-VL-BF16",
+    parse_prompt: str = "NEMOTRON_PARSE_PROMPT",
     model_cache_dir: str | None = None,
     dpi: int = 300,
     include_tables_for_vl: bool = False,
@@ -154,6 +164,7 @@ def build_pipeline(
         output_path: Path for output JSONL.
         parse_model: Nemotron Parse model identifier.
         vl_model: Nemotron Nano VL model identifier.
+        parse_prompt: Parse prompt name from prompts.py or literal string.
         model_cache_dir: Cache directory for model weights.
         dpi: DPI for PDF page rendering.
         include_tables_for_vl: Also send tables to VL for interpretation.
@@ -177,6 +188,7 @@ def build_pipeline(
     pipeline.add_stage(
         LayoutDetectionStage(
             model_identifier=parse_model,
+            prompt=resolve_prompt(parse_prompt),
             cache_dir=model_cache_dir,
             verbose=verbose,
         )
@@ -237,6 +249,12 @@ def main() -> None:
         help="Nemotron Nano VL model identifier",
     )
     parser.add_argument(
+        "--parse-prompt",
+        type=str,
+        default="NEMOTRON_PARSE_PROMPT",
+        help="Parse prompt name from prompts.py or literal prompt string",
+    )
+    parser.add_argument(
         "--model-cache-dir",
         type=str,
         default=None,
@@ -277,6 +295,7 @@ def main() -> None:
         output_path=args.output,
         parse_model=args.parse_model,
         vl_model=args.vl_model,
+        parse_prompt=args.parse_prompt,
         model_cache_dir=args.model_cache_dir,
         dpi=args.dpi,
         include_tables_for_vl=args.include_tables_for_vl,

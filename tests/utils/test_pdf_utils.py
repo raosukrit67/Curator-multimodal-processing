@@ -148,7 +148,7 @@ class TestBoundingBoxOps:
 
 class TestExtractClassesBboxes:
     def test_basic_parsing(self, sample_parse_output):
-        classes, bboxes, texts = extract_classes_bboxes(sample_parse_output)
+        classes, _bboxes, _texts = extract_classes_bboxes(sample_parse_output)
 
         assert len(classes) == 5
         assert classes[0] == "Title"
@@ -158,13 +158,13 @@ class TestExtractClassesBboxes:
         assert classes[4] == "Formula"
 
     def test_bbox_values(self, sample_parse_output):
-        classes, bboxes, texts = extract_classes_bboxes(sample_parse_output)
+        _classes, bboxes, _texts = extract_classes_bboxes(sample_parse_output)
 
         # Title bbox
         assert bboxes[0] == pytest.approx((0.05, 0.02, 0.95, 0.06))
 
     def test_text_content(self, sample_parse_output):
-        classes, bboxes, texts = extract_classes_bboxes(sample_parse_output)
+        _classes, _bboxes, texts = extract_classes_bboxes(sample_parse_output)
 
         assert "Introduction" in texts[0]
         assert "scalable" in texts[1]
@@ -180,7 +180,7 @@ class TestExtractClassesBboxes:
 
     def test_inline_formula_remapped(self):
         output = "<x_0.1><y_0.1>$x^2$<x_0.5><y_0.2><class_Inline-formula>"
-        classes, bboxes, texts = extract_classes_bboxes(output)
+        classes, _bboxes, _texts = extract_classes_bboxes(output)
         assert classes[0] == "Formula"  # Remapped from Inline-formula
 
 
@@ -198,7 +198,7 @@ class TestTransformBboxToOriginal:
         # For a 1648x2048 image (matches target exactly), center is (0.5, 0.5)
         bbox = (0.5, 0.5, 0.5, 0.5)
         result = transform_bbox_to_original(bbox, 1648, 2048)
-        left, top, right, bottom = result
+        left, top, _right, _bottom = result
         # Should be approximately at the center
         assert abs(left - 824) < 2
         assert abs(top - 1024) < 2

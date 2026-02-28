@@ -43,7 +43,6 @@ from PIL import Image, ImageDraw, ImageFont
 
 from nemo_curator.utils.pdf_utils import (
     PARSE_CLASS_COLORS,
-    pdf_page_to_image,
     pdf_to_images,
 )
 

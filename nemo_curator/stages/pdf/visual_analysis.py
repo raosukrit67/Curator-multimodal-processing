@@ -46,6 +46,10 @@ class VisualAnalysisStage(ProcessingStage[DocumentBatch, DocumentBatch]):
 
     Args:
         model_identifier: HuggingFace model ID for Nemotron Nano VL.
+        prompts_by_type: Dict mapping content class names to prompt strings.
+            Defaults to VL_PROMPTS_BY_TYPE from prompts.py.
+        default_prompt: Fallback prompt for unrecognized content types.
+            Defaults to VL_DEFAULT_ANALYSIS_PROMPT from prompts.py.
         routed_content_field: Column with routed content from ContentRoutingStage.
         output_field: Column for storing analysis results.
         max_tokens: Maximum tokens for generation.
@@ -59,6 +63,8 @@ class VisualAnalysisStage(ProcessingStage[DocumentBatch, DocumentBatch]):
     def __init__(
         self,
         model_identifier: str = "nvidia/NVIDIA-Nemotron-Nano-12B-v2-VL-BF16",
+        prompts_by_type: dict[str, str] | None = None,
+        default_prompt: str = VL_DEFAULT_ANALYSIS_PROMPT,
         routed_content_field: str = "routed_content",
         output_field: str = "analysis_results",
         max_tokens: int = 1024,
@@ -70,6 +76,8 @@ class VisualAnalysisStage(ProcessingStage[DocumentBatch, DocumentBatch]):
         verbose: bool = False,
     ):
         self.model_identifier = model_identifier
+        self.prompts_by_type = prompts_by_type if prompts_by_type is not None else VL_PROMPTS_BY_TYPE
+        self.default_prompt = default_prompt
         self.routed_content_field = routed_content_field
         self.output_field = output_field
         self.max_tokens = max_tokens
@@ -140,7 +148,7 @@ class VisualAnalysisStage(ProcessingStage[DocumentBatch, DocumentBatch]):
         as recommended for Nemotron Nano VL.
         """
         cls = region.get("class_name", "Picture")
-        prompt_text = VL_PROMPTS_BY_TYPE.get(cls, VL_DEFAULT_ANALYSIS_PROMPT)
+        prompt_text = self.prompts_by_type.get(cls, self.default_prompt)
         image_b64 = region["cropped_image_base64"]
 
         return [
