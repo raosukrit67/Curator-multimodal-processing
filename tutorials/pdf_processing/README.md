@@ -1,47 +1,92 @@
-# PDF Multimodal Extraction Tutorial
+# Multimodal PDF Extraction and Curation Tutorial
 
-This tutorial demonstrates how to build a complete multimodal pretraining data curation pipeline using NeMo Curator with local vLLM inference. The pipeline extracts and analyzes text, tables, and images from PDF documents using vision-language models.
+This tutorial demonstrates a complete pipeline for extracting and curating multimodal content from PDF documents using NeMo Curator. It uses two vision-language models via local vLLM inference:
 
-## Overview
-
-The tutorial consists of 4 scripts that process PDFs through a complete data curation workflow:
-
-1. **Download PDFs** - Download PDF files from URLs
-2. **Extract Multimodal Content** - Extract text, tables, and images using vision-language models
-3. **Remove Duplicates** - Apply fuzzy and semantic deduplication
-4. **Quality Filtering** - Filter low-quality content
+- **Nemotron Parse 1.1B** (`nvidia/NVIDIA-Nemotron-Parse-v1.1`) — OCR, layout detection, and text extraction in a single pass
+- **Nemotron Nano 12B VL** (`nvidia/NVIDIA-Nemotron-Nano-12B-v2-VL-BF16`) — Visual understanding for pictures, figures, and charts
 
 ## Architecture
 
-### Pipeline Stages
+### Why Two Models?
 
-The main extraction pipeline (`1_run_data_extraction.py`) implements **10 stages**:
+Nemotron Parse is a specialized encoder-decoder VLM (~885M params) that simultaneously detects document layout (13 content classes with bounding boxes) and extracts text as Markdown. However, for visual content (pictures, figures, charts), Parse can only detect the bounding box — it cannot describe or interpret visual content. Nemotron Nano VL (12B params) fills this gap by generating natural language descriptions of cropped image regions.
 
-| Stage | Description | Resources | Model |
-|-------|-------------|-----------|-------|
-| JSONLReaderStage | Read PDF paths from JSONL | 2 CPUs | - |
-| PDFToImageStage | Convert PDF pages to images (300 DPI) | 4 CPUs | - |
-| LayoutDetectionStage | Detect document layout with bounding boxes | 4 CPUs, 16GB GPU | nvidia/nemoretriever-parse |
-| BoundingBoxExtractionStage | Crop regions from images | 4 CPUs | - |
-| ContentTypeClassificationStage | Classify content types (text/table/image) | 2 CPUs | - |
-| TableExtractionStage | Extract tables to HTML format | 4 CPUs | - |
-| TextExtractionStage | Extract text from regions | 4 CPUs | - |
-| ImageExtractionStage | Extract and save image regions | 2 CPUs | - |
-| DeepAnalysisStage | Deep content analysis with VLM | 4 CPUs, 12GB GPU | llama-3.1-nemotron-nano-vl-8b-v1 |
-| JSONLWriterStage | Write organized results to JSONL | 2 CPUs | - |
+### Extraction Pipeline Stages
+
+The extraction pipeline (`2_run_extraction.py`) has 7 stages:
+
+| # | Stage | Description | Resources |
+|---|-------|-------------|-----------|
+| 1 | PDFReaderStage | Read PDF paths from JSONL manifest | 1 CPU |
+| 2 | PDFToImageStage | Render PDF pages as 300 DPI images | 1 CPU |
+| 3 | LayoutDetectionStage | Nemotron Parse: OCR + layout + text extraction | 1 CPU, 1 GPU (16GB) |
+| 4 | ContentRoutingStage | Route text regions direct, visual regions to VL | 1 CPU |
+| 5 | VisualAnalysisStage | Nemotron Nano VL: describe visual content | 1 CPU, 1 GPU (24GB) |
+| 6 | TextAssemblyStage | Combine all modalities into structured JSON | 0.5 CPU |
+| 7 | PDFWriterStage | Write results to JSONL | 1 CPU |
 
 ### Data Flow
 
 ```
-source/pdf_urls.jsonl
-    ↓ (0_download.py)
-extraction_results/downloaded_pdfs.jsonl + source/pdfs/
-    ↓ (1_run_data_extraction.py)
-extraction_results/extracted_multimodal_data.jsonl
-    ↓ (2_remove_duplicates.py)
-dedup_results/deduplicated_data.jsonl
-    ↓ (3_run_quality_filters.py)
-quality_results/filtered_data.jsonl (final curated dataset)
+PDF Page Image (300 DPI)
+     │
+     ▼
+[Nemotron Parse 1.1B]  ──► Text/Title/Section/etc. ──────────────► ┐
+     │                  ──► Tables (LaTeX) ───────────────────────► ├─► TextAssemblyStage ──► JSONL
+     │                  ──► Picture/Figure/Chart (bbox only) ──► ┐ │
+     │                                                          │ │
+     ▼                                                          ▼ │
+[Crop image region]  ──►  [Nemotron Nano 12B VL]  ──► description ─┘
+```
+
+### Content Routing
+
+| Parse Class | Route | Processing |
+|-------------|-------|------------|
+| Text, Title, Section, List-Item, Caption, etc. | Direct | Already extracted as Markdown |
+| Table | Direct (optionally VL) | LaTeX extracted by Parse; VL can add interpretation |
+| Formula | Direct | LaTeX extracted by Parse |
+| Picture, Figure, Chart | VL model | Cropped and sent to Nano VL for description |
+
+## Tutorial Scripts
+
+```
+tutorials/pdf_processing/
+├── datasets.json            # PDF source configs (URLs for download)
+├── 0_download.py            # Download PDFs from URLs (optional, skip if you have local PDFs)
+├── 1_prepare_data.py        # Create pdf_files.jsonl from a PDF directory
+├── 2_run_extraction.py      # Main 7-stage extraction pipeline (GPU)
+├── 3_remove_duplicates.py   # Fuzzy deduplication (MinHash + LSH)
+├── 4_run_quality_filters.py # Q&A quality filtering
+├── visualize_layout.py      # Visualize Parse layout detection with colored bboxes
+├── visualize_extraction.py  # Side-by-side and heatmap visualization of extraction
+└── data/raw/pdfs/           # Sample NVIDIA datasheets (5 PDFs included)
+```
+
+### Two Paths to Extraction
+
+```
+Path A (have URLs):                     Path B (have local PDFs):
+
+  datasets.json                           /your/pdf/directory/
+       │                                         │
+       ▼                                         │
+  0_download.py                                  │
+       │                                         │
+       ▼                                         ▼
+  data/raw/pdfs/  ──────────────►  1_prepare_data.py
+                                         │
+                                         ▼
+                                   pdf_files.jsonl
+                                         │
+                                         ▼
+                                   2_run_extraction.py  ──►  extracted_data.jsonl
+                                         │
+                                         ▼
+                                   3_remove_duplicates.py  ──►  deduplicated_data.jsonl
+                                         │
+                                         ▼
+                                   4_run_quality_filters.py  ──►  filtered_data.jsonl
 ```
 
 ## Setup
@@ -52,82 +97,107 @@ quality_results/filtered_data.jsonl (final curated dataset)
 # Install NeMo Curator with vLLM support
 pip install nemo-curator[vllm]
 
-# Install PDF processing dependencies
-pip install pdf2image
-sudo apt-get install poppler-utils  # Linux
-# or
-brew install poppler  # macOS
-
-# Optional: For OCR support
-pip install pytesseract
+# PDF rendering (PyMuPDF)
+pip install pymupdf
 ```
 
 ### GPU Requirements
 
-- **Minimum**: 1x 24GB GPU (e.g., RTX 3090, A5000)
-  - Can run both GPU stages sequentially
-- **Recommended**: 2x 24GB GPUs
-  - Run layout detection and analysis in parallel for higher throughput
-- **Optimal**: 4+ GPUs
-  - Use tensor parallelism for larger models or process more PDFs concurrently
+| Setup | Description |
+|-------|-------------|
+| **Minimum** | 1x GPU with 24GB VRAM (run Parse and VL sequentially) |
+| **Recommended** | 2x GPUs (Parse on one, VL on another in parallel) |
+| **Optimal** | 4+ GPUs (tensor parallelism + concurrent processing) |
+
+GPU memory estimates:
+- Nemotron Parse 1.1B: ~4 GB (BF16)
+- Nemotron Nano 12B VL: ~24 GB (BF16) or ~12 GB (FP8)
 
 ## Usage
 
-### Step 0: Prepare PDF URLs
+### Step 0: Download PDFs (optional)
 
-Create `source/pdf_urls.jsonl` with PDF URLs to download:
+Skip this step if you already have PDF files locally.
 
-```jsonl
-{"url": "https://arxiv.org/pdf/2301.00001.pdf", "filename": "sample1.pdf"}
-{"url": "https://arxiv.org/pdf/2302.00001.pdf", "filename": "sample2.pdf"}
-```
-
-### Step 1: Download PDFs
+PDF URL sources are configured in `datasets.json`. Five NVIDIA hardware datasheets are included as sample data.
 
 ```bash
-python 0_download.py
+# List available datasets
+python 0_download.py --list
+
+# Download the default dataset
+python 0_download.py --dataset NVIDIA_DATASHEETS
+
+# Download to a custom directory
+python 0_download.py --output-dir /data/my_pdfs
+
+# Test with fewer files
+python 0_download.py --max-files 2
 ```
 
-This downloads PDFs to `source/pdfs/` and creates a manifest at `extraction_results/downloaded_pdfs.jsonl`.
+To add a custom PDF source, edit `datasets.json`:
+```json
+{
+  "MY_PAPERS": {
+    "description": "My research papers",
+    "source": "url",
+    "urls": ["https://example.com/paper1.pdf", "https://example.com/paper2.pdf"]
+  }
+}
+```
+
+### Step 1: Prepare Data
+
+Create a JSONL manifest from your PDF directory. Both paths (downloaded or local) converge here.
+
+```bash
+# From downloaded PDFs (default directory)
+python 1_prepare_data.py
+
+# From your own PDF directory
+python 1_prepare_data.py --pdf-dir /path/to/your/pdfs
+```
 
 ### Step 2: Extract Multimodal Content
 
 ```bash
-python 1_run_data_extraction.py
+python 2_run_extraction.py --input data/raw/pdf_files.jsonl --output data/extracted/extracted_data.jsonl
 ```
 
-This runs the complete extraction pipeline:
-- Converts PDFs to images
-- Detects layout with vision-language model
-- Extracts tables, text, and images
-- Performs deep content analysis
-- Writes organized results to `extraction_results/extracted_multimodal_data.jsonl`
+Options:
+- `--parse-model` — Override Parse model (default: `nvidia/NVIDIA-Nemotron-Parse-v1.1`)
+- `--vl-model` — Override VL model (default: `nvidia/NVIDIA-Nemotron-Nano-12B-v2-VL-BF16`)
+- `--dpi` — PDF rendering resolution (default: 300)
+- `--include-tables-for-vl` — Also send tables to VL model for richer interpretation
+- `--model-cache-dir` — Custom cache directory for model weights
 
-**Expected runtime**: ~2-5 minutes per PDF (depends on GPU, page count, and model size)
-
-### Step 3: Remove Duplicates
+### Step 3: Deduplicate
 
 ```bash
-python 2_remove_duplicates.py
+python 3_remove_duplicates.py
 ```
 
-Applies fuzzy and semantic deduplication to remove near-duplicate and semantically duplicate content.
+### Step 4: Quality Filter for Q&A Curation
 
-Output: `dedup_results/deduplicated_data.jsonl`
-
-### Step 4: Apply Quality Filters
+Filters are designed for building Q&A datasets from PDF content:
 
 ```bash
-python 3_run_quality_filters.py
+python 4_run_quality_filters.py --input data/extracted/extracted_data.jsonl --output data/filtered/filtered_data.jsonl
 ```
 
-Filters low-quality content based on text quality metrics and custom thresholds.
+The pipeline applies three filters:
 
-Output: `quality_results/filtered_data.jsonl` (final curated dataset)
+| Filter | What it does | Why |
+|--------|-------------|-----|
+| **ExtractionCompletenessFilter** | Drop docs where >50% of pages have no content | Parse failed — corrupt/scanned/encrypted PDF |
+| **BoilerplateFilter** | Strip pages that are only headers/footers/ToC | Cannot produce Q&A pairs |
+| **QAReadinessFilter** | Keep docs with answerable content (text >= 80 chars, tables, or described figures) | Short fragments and empty pages can't form Q&A pairs |
+
+Parameters: `--min-extraction-ratio`, `--min-answer-length`, `--min-qa-pages`
 
 ## Output Format
 
-The final output (`extracted_multimodal_data.jsonl`) contains one JSON object per PDF:
+The extraction pipeline produces JSONL with one JSON object per PDF:
 
 ```json
 {
@@ -135,229 +205,39 @@ The final output (`extracted_multimodal_data.jsonl`) contains one JSON object pe
   "pages": [
     {
       "page_number": 0,
-      "text": [
-        {
-          "bbox": {"x": 0.1, "y": 0.2, "width": 0.8, "height": 0.1},
-          "text": "Extracted text content..."
-        }
+      "text_blocks": [
+        {"class_name": "Title", "bbox": [100, 50, 500, 90], "text": "Introduction"}
       ],
       "tables": [
-        {
-          "bbox": {"x": 0.1, "y": 0.4, "width": 0.8, "height": 0.3},
-          "html": "<table>...</table>"
-        }
+        {"bbox": [50, 200, 550, 400], "latex": "\\begin{tabular}...\\end{tabular}"}
       ],
-      "images": [
-        {
-          "bbox": {"x": 0.2, "y": 0.7, "width": 0.6, "height": 0.2},
-          "type": "figure",
-          "image_base64": "iVBORw0KGgoAAAANS..."
-        }
+      "figures": [
+        {"bbox": [100, 450, 400, 700], "class_name": "Picture", "description": "Bar chart showing..."}
       ],
-      "analyses": [
-        {
-          "type": "table",
-          "bbox": {"x": 0.1, "y": 0.4, "width": 0.8, "height": 0.3},
-          "analysis": "This table shows experimental results..."
-        }
-      ]
+      "full_text": "Introduction\n\nThe extracted body text...\n\n[Picture: Bar chart showing...]"
     }
   ]
 }
 ```
 
-## Configuration
+Bounding boxes are `[left, top, right, bottom]` in pixel coordinates (at the rendered DPI).
 
-### Model Selection
+## Visualization
 
-You can change the models used for layout detection and deep analysis:
+```bash
+# Color-coded layout detection overlay
+python visualize_layout.py
 
-```python
-# In 1_run_data_extraction.py
+# Side-by-side extraction view (numbered regions + extracted text)
+python visualize_extraction.py --mode side_by_side
 
-# Layout detection model
-LayoutDetectionStage(
-    model_identifier="nvidia/nemoretriever-parse",  # Change here
-    ...
-)
-
-# Deep analysis model
-DeepAnalysisStage(
-    model_identifier="nvidia/llama-3.1-nemotron-nano-vl-8b-v1",  # Change here
-    ...
-)
-```
-
-### GPU Memory Configuration
-
-Adjust GPU memory allocation per stage:
-
-```python
-# In stage definitions
-self.resources = Resources(
-    cpus=4.0,
-    gpus=1.0,
-    gpu_mem_gb=16.0  # Adjust based on available GPU memory
-)
-```
-
-### Processing Parameters
-
-Customize processing parameters:
-
-```python
-# PDF to Image conversion
-PDFToImageStage(
-    dpi=300,  # Increase for higher quality (slower)
-)
-
-# Layout detection
-LayoutDetectionStage(
-    max_tokens=3500,  # Increase for longer outputs
-    temperature=0.0,  # Adjust for more/less randomness
-)
-
-# Deep analysis
-DeepAnalysisStage(
-    max_tokens=1024,
-    temperature=0.2,
-    top_p=0.7,
-)
-```
-
-## Performance Optimization
-
-### Scaling Strategies
-
-1. **Single GPU**: Process PDFs sequentially
-   - Layout detection and analysis run on the same GPU
-   - Throughput: ~2-5 PDFs/hour (depends on page count)
-
-2. **Multi-GPU**: Parallel processing
-   - Distribute PDFs across GPUs
-   - Throughput scales linearly with GPU count
-
-3. **Ray Distributed Execution**:
-   - Automatic GPU scheduling
-   - Worker pooling for efficient GPU utilization
-   - Stage-level parallelism
-
-### Batch Size Strategy
-
-All stages use `batch_size = 1` (process one PDF at a time) because:
-- Ray handles parallelism automatically
-- Workers process multiple PDFs concurrently based on available resources
-- Better failure isolation (one PDF failure doesn't affect others)
-
-## Troubleshooting
-
-### Out of Memory (OOM) Errors
-
-If you encounter GPU OOM errors:
-
-1. **Reduce GPU memory allocation**:
-   ```python
-   # In stage definitions
-   self.resources = Resources(gpu_mem_gb=12.0)  # Reduce from 16GB
-   ```
-
-2. **Process fewer PDFs concurrently**:
-   - Ray will automatically limit concurrency based on available GPU memory
-
-3. **Use smaller models**:
-   - Switch to smaller vision-language models if available
-
-### PDF Conversion Issues
-
-If PDF to image conversion fails:
-
-1. **Install poppler**:
-   ```bash
-   # Linux
-   sudo apt-get install poppler-utils
-
-   # macOS
-   brew install poppler
-   ```
-
-2. **Check PDF file integrity**:
-   - Ensure PDFs are not corrupted
-   - Try opening PDFs in a viewer first
-
-### vLLM Installation Issues
-
-If vLLM fails to load:
-
-1. **Check CUDA version compatibility**:
-   ```bash
-   python -c "import torch; print(torch.cuda.is_available())"
-   ```
-
-2. **Reinstall vLLM**:
-   ```bash
-   pip uninstall vllm
-   pip install vllm --no-cache-dir
-   ```
-
-## Advanced Usage
-
-### Custom Stages
-
-You can add custom processing stages to the pipeline:
-
-```python
-from nemo_curator.stages.base import ProcessingStage
-
-class CustomStage(ProcessingStage[DocumentBatch, DocumentBatch]):
-    def __init__(self):
-        self.name = "custom_stage"
-        self.resources = Resources(cpus=2.0)
-
-    def process(self, batch: DocumentBatch) -> DocumentBatch:
-        # Your custom processing logic here
-        return batch
-
-# Add to pipeline
-pipeline.add_stage(CustomStage())
-```
-
-### Filtering by Content Type
-
-You can filter stages to process only specific content types:
-
-```python
-# Only analyze tables and images
-DeepAnalysisStage(
-    analyze_types=["table", "image"],  # Exclude text
-)
-```
-
-### Enable OCR Fallback
-
-For PDFs with images of text:
-
-```python
-TextExtractionStage(
-    use_ocr=True,  # Enable OCR for text extraction
-)
+# Heatmap (green=text ok, red=empty, yellow=VL description)
+python visualize_extraction.py --mode heatmap
 ```
 
 ## References
 
-- [NeMo Curator Documentation](https://github.com/NVIDIA/NeMo-Curator)
-- [vLLM Documentation](https://docs.vllm.ai/)
-- [Nemotron Parse Model](https://huggingface.co/nvidia/nemoretriever-parse)
-- [Llama 3.1 Nemotron Nano VL](https://huggingface.co/nvidia/llama-3.1-nemotron-nano-vl-8b-v1)
-
-## Citation
-
-If you use this pipeline in your research, please cite:
-
-```bibtex
-@software{nemo_curator,
-  title = {NeMo Curator: Scalable Data Curation for Large Language Models},
-  author = {NVIDIA Corporation},
-  year = {2025},
-  url = {https://github.com/NVIDIA/NeMo-Curator}
-}
-```
+- [NeMo Curator](https://github.com/NVIDIA/NeMo-Curator)
+- [Nemotron Parse 1.1B](https://huggingface.co/nvidia/NVIDIA-Nemotron-Parse-v1.1)
+- [Nemotron Nano 12B v2 VL](https://huggingface.co/nvidia/NVIDIA-Nemotron-Nano-12B-v2-VL-BF16)
+- [vLLM](https://docs.vllm.ai/)

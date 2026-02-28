@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,11 +29,11 @@ The script:
 4. Writes deduplicated results
 
 Input:
-    extraction_results/extracted_multimodal_data.jsonl
+    data/extracted/extracted_data.jsonl
 
 Output:
-    dedup_results/deduplicated_data.jsonl
-    dedup_results/duplicate_ids.parquet (intermediate)
+    data/dedup/deduplicated_data.jsonl
+    data/dedup/duplicate_ids.parquet (intermediate)
 """
 
 import json
@@ -74,23 +74,32 @@ def preprocess_for_deduplication(input_path: str, temp_path: str) -> None:
                 text_parts = []
 
                 for page in pages:
-                    # Extract text blocks
-                    for text_block in page.get("text", []):
+                    # Use full_text if available (from TextAssemblyStage)
+                    full_text = page.get("full_text", "").strip()
+                    if full_text:
+                        text_parts.append(full_text)
+                        continue
+
+                    # Fallback: extract from text_blocks
+                    for text_block in page.get("text_blocks", []):
                         text = text_block.get("text", "").strip()
                         if text:
                             text_parts.append(text)
 
-                    # Extract table text (if available in HTML)
+                    # Extract table content (LaTeX from Parse)
                     for table in page.get("tables", []):
-                        html = table.get("html", "").strip()
-                        if html:
-                            # Basic HTML text extraction (remove tags)
-                            import re
+                        latex = table.get("latex", "").strip()
+                        if latex:
+                            text_parts.append(latex)
+                        desc = table.get("description", "").strip()
+                        if desc:
+                            text_parts.append(desc)
 
-                            text = re.sub(r"<[^>]+>", " ", html)
-                            text = " ".join(text.split())
-                            if text:
-                                text_parts.append(text)
+                    # Extract figure descriptions (from VL model)
+                    for figure in page.get("figures", []):
+                        desc = figure.get("description", "").strip()
+                        if desc:
+                            text_parts.append(desc)
 
                 # Combine all text
                 combined_text = " ".join(text_parts)
@@ -155,8 +164,8 @@ def main():
     """Run deduplication pipeline."""
     # Setup paths
     script_dir = Path(__file__).parent
-    input_path = script_dir / "extraction_results" / "extracted_multimodal_data.jsonl"
-    output_dir = script_dir / "dedup_results"
+    input_path = script_dir / "data" / "extracted" / "extracted_data.jsonl"
+    output_dir = script_dir / "data" / "dedup"
     output_path = output_dir / "deduplicated_data.jsonl"
 
     # Intermediate paths
@@ -173,7 +182,7 @@ def main():
     # Check input file exists
     if not input_path.exists():
         logger.error(f"Input file not found: {input_path}")
-        logger.info("Please run 1_run_data_extraction.py first")
+        logger.info("Please run 2_run_extraction.py first")
         return
 
     # Step 1: Preprocess data for deduplication
@@ -208,7 +217,7 @@ def main():
 
         # Run workflow
         logger.info("Executing fuzzy deduplication workflow...")
-        result = fuzzy_workflow.run(executor)
+        fuzzy_workflow.run(executor)
 
         logger.info("Fuzzy deduplication workflow completed")
 

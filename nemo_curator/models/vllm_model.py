@@ -1,4 +1,4 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -76,7 +76,37 @@ def _get_gpu_count() -> int:
 
 
 class VLLMModel(ModelInterface):
-    """Generic vLLM language model wrapper for text generation."""
+    """Unified vLLM model wrapper for text and vision-language generation.
+
+    Supports three generation modes:
+    - ``generate()``: Text-only or multimodal prompts via vLLM's generate API.
+      Works with plain strings, chat-template message lists, or dicts with
+      ``multi_modal_data`` (e.g., Nemotron Parse).
+    - ``chat()``: OpenAI-style chat completions via vLLM's chat API.
+      Supports ``image_url`` content blocks (e.g., Nemotron Nano VL).
+    - ``get_tokenizer()``: Access the underlying tokenizer.
+
+    Args:
+        model: Model identifier (e.g., "microsoft/phi-4" or
+            "nvidia/NVIDIA-Nemotron-Parse-v1.1").
+        max_model_len: Maximum model context length. Auto-detected from
+            HuggingFace config if not specified.
+        tensor_parallel_size: Number of GPUs for tensor parallelism.
+            Auto-detects available GPUs if not specified.
+        max_num_batched_tokens: Maximum tokens per batch. Defaults to 4096.
+        temperature: Sampling temperature. Defaults to 0.7.
+        top_p: Top-p sampling parameter. Defaults to 0.8.
+        top_k: Top-k sampling parameter. Defaults to 20.
+        min_p: Min-p sampling parameter (for Qwen3). Defaults to 0.0.
+        max_tokens: Maximum tokens to generate. Defaults to None
+            (uses max_model_len).
+        cache_dir: Cache directory for model weights.
+        allowed_local_media_path: Path prefix for local media files.
+            Required for chat API with local image URLs.
+        extra_llm_kwargs: Additional kwargs passed to vLLM LLM constructor
+            (e.g., ``mm_processor_kwargs``, ``limit_mm_per_prompt``,
+            ``disable_log_stats``).
+    """
 
     def __init__(  # noqa: PLR0913
         self,
@@ -90,25 +120,9 @@ class VLLMModel(ModelInterface):
         min_p: float = 0.0,
         max_tokens: int | None = None,
         cache_dir: str | None = None,
+        allowed_local_media_path: str | None = None,
+        extra_llm_kwargs: dict[str, Any] | None = None,
     ):
-        """
-        Initialize the vLLM model wrapper.
-
-        Args:
-            model: Model identifier (e.g., "microsoft/phi-4")
-            max_model_len: Maximum model context length. If not specified,
-                will be auto-detected from HuggingFace AutoConfig.
-            tensor_parallel_size: Number of GPUs for tensor parallelism.
-                If not specified, auto-detects available GPUs.
-            max_num_batched_tokens: Maximum tokens per batch. Defaults to
-                4096.
-            temperature: Sampling temperature. Defaults to 0.7.
-            top_p: Top-p sampling parameter. Defaults to 0.8.
-            top_k: Top-k sampling parameter. Defaults to 20.
-            min_p: Min-p sampling parameter (for Qwen3). Defaults to 0.0.
-            max_tokens: Maximum tokens to generate. Defaults to None.
-            cache_dir: Cache directory for model weights. Defaults to None.
-        """
         self.model = model
         self.max_model_len = max_model_len
         self.tensor_parallel_size = tensor_parallel_size
@@ -119,6 +133,8 @@ class VLLMModel(ModelInterface):
         self.min_p = min_p
         self.max_tokens = max_tokens
         self.cache_dir = cache_dir
+        self.allowed_local_media_path = allowed_local_media_path
+        self.extra_llm_kwargs = extra_llm_kwargs or {}
         self._llm: LLM | None = None
         self._sampling_params: SamplingParams | None = None
         self._final_max_model_len: int | None = None
@@ -137,24 +153,25 @@ class VLLMModel(ModelInterface):
             )
             raise ImportError(msg)
 
-        # Fetch max_model_len from user param or auto-detect from HuggingFace AutoConfig
+        # Resolve max_model_len
         if self.max_model_len is not None:
             final_max_model_len = self.max_model_len
         else:
             final_max_model_len = _get_max_model_len_from_config(self.model)
 
-        # Set tensor_parallel_size as user param or auto-detect from GPU count
-        final_tp_size = self.tensor_parallel_size if self.tensor_parallel_size is not None else _get_gpu_count()
-
-        # Set max_num_batched_tokens as user param or use default
-        final_max_batched = self.max_num_batched_tokens
+        # Resolve tensor_parallel_size
+        final_tp_size = (
+            self.tensor_parallel_size
+            if self.tensor_parallel_size is not None
+            else _get_gpu_count()
+        )
 
         llm_kwargs: dict[str, Any] = {
             "model": self.model,
             "enforce_eager": False,
             "trust_remote_code": True,
             "tensor_parallel_size": final_tp_size,
-            "max_num_batched_tokens": final_max_batched,
+            "max_num_batched_tokens": self.max_num_batched_tokens,
         }
 
         if final_max_model_len is not None:
@@ -163,11 +180,16 @@ class VLLMModel(ModelInterface):
         if self.cache_dir is not None:
             llm_kwargs["download_dir"] = self.cache_dir
 
+        if self.allowed_local_media_path is not None:
+            llm_kwargs["allowed_local_media_path"] = self.allowed_local_media_path
+
+        llm_kwargs.update(self.extra_llm_kwargs)
+
         logger.info(
             f"Initializing vLLM with: model={self.model}, "
             f"max_model_len={final_max_model_len}, "
             f"tensor_parallel_size={final_tp_size}, "
-            f"max_num_batched_tokens={final_max_batched}"
+            f"max_num_batched_tokens={self.max_num_batched_tokens}"
         )
 
         self._llm = LLM(**llm_kwargs)
@@ -201,14 +223,18 @@ class VLLMModel(ModelInterface):
 
     def generate(
         self,
-        prompts: list[str] | list[list[dict[str, str]]],
+        prompts: list[str] | list[dict[str, Any]] | list[list[dict[str, str]]],
     ) -> list[str]:
-        """
-        Generate text from prompts.
+        """Generate text from prompts.
+
+        Supports multiple prompt formats:
+        - List of strings (text-only generation)
+        - List of dicts with "prompt" and "multi_modal_data" keys
+          (multimodal generation, e.g., Nemotron Parse)
+        - List of message-dict lists (chat template formatting)
 
         Args:
-            prompts: List of prompt strings or list of message dicts
-                (for chat template).
+            prompts: Prompts in any of the supported formats.
 
         Returns:
             List of generated text strings.
@@ -234,9 +260,53 @@ class VLLMModel(ModelInterface):
             msg = f"Error generating text: {e}"
             raise RuntimeError(msg) from e
 
+    def chat(
+        self,
+        messages_list: list[list[dict[str, Any]]],
+        sampling_params: Any | None = None,
+    ) -> list[str]:
+        """Generate text using the chat API.
+
+        Uses vLLM's OpenAI-compatible chat completions endpoint.
+        Supports ``image_url`` content blocks for vision-language models.
+
+        Args:
+            messages_list: List of conversation message lists. Each message
+                list contains dicts with "role" and "content" keys.
+            sampling_params: Optional override for sampling parameters.
+
+        Returns:
+            List of generated text strings.
+        """
+        if self._llm is None or self._sampling_params is None:
+            msg = "Model not initialized. Call setup() first."
+            raise RuntimeError(msg)
+
+        params = sampling_params if sampling_params is not None else self._sampling_params
+
+        try:
+            results = []
+            for messages in messages_list:
+                outputs = self._llm.chat(
+                    messages=messages,
+                    sampling_params=params,
+                )
+                if outputs and outputs[0].outputs:
+                    results.append(outputs[0].outputs[0].text)
+                else:
+                    results.append("")
+        except Exception as e:
+            msg = f"Error in chat: {e}"
+            raise RuntimeError(msg) from e
+        return results
+
     def get_tokenizer(self) -> Any:  # noqa: ANN401
         """Get the tokenizer from the LLM instance."""
         if self._llm is None:
             msg = "Model not initialized. Call setup() first."
             raise RuntimeError(msg)
         return self._llm.get_tokenizer()
+
+
+# Backward-compatible alias
+VLLMVisionModel = VLLMModel

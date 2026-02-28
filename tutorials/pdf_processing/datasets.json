@@ -1,0 +1,23 @@
+{
+  "NVIDIA_DATASHEETS": {
+    "description": "NVIDIA hardware datasheets with rich multimodal content (text, tables, figures, charts)",
+    "source": "url",
+    "urls": [
+      "https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/documents/datasheet-nvidia-bluefield-2-dpu.pdf",
+      "https://images.nvidia.com/content/Solutions/data-center/a40/nvidia-a40-datasheet.pdf",
+      "https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a100/pdf/nvidia-a100-datasheet-us-nvidia-1758950-r4-web.pdf",
+      "https://images.nvidia.com/content/grid/pdf/188270-NVIDIA-GRID-Datasheet-NV-US-FNL-Web.pdf",
+      "https://www.nvidia.com/content/dam/en-zz/Solutions/design-visualization/rtx/nvidia-rtx-a4500-datasheet.pdf"
+    ]
+  },
+  "ARXIV_SAMPLE": {
+    "description": "Sample arXiv papers for testing (add your own URLs)",
+    "source": "url",
+    "urls": []
+  },
+  "LOCAL": {
+    "description": "Local PDF files (set pdf_dir via --pdf-dir)",
+    "source": "local",
+    "urls": []
+  }
+}

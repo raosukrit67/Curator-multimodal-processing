@@ -1,4 +1,4 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -52,7 +52,7 @@ class PDFToImageStage(ProcessingStage[DocumentBatch, DocumentBatch]):
         self.output_field = output_field
 
         self.name = "pdf_to_image"
-        self.resources = Resources(cpus=4.0)
+        self.resources = Resources(cpus=1.0)
         self.batch_size = 1
 
     def inputs(self) -> tuple[list[str], list[str]]:
@@ -85,7 +85,7 @@ class PDFToImageStage(ProcessingStage[DocumentBatch, DocumentBatch]):
                 page_images_list.append(json.dumps(page_data))
                 logger.info(f"Converted {len(images)} pages from {Path(pdf_path).name}")
 
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001, PERF203
                 logger.error(f"Failed to convert PDF {pdf_path}: {e}")
                 # Store empty list on failure
                 page_images_list.append(json.dumps([]))

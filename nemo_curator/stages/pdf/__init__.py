@@ -1,4 +1,4 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,22 +14,16 @@
 
 """Stages for PDF document processing and multimodal content extraction."""
 
-from nemo_curator.stages.pdf.bbox_extraction import BoundingBoxExtractionStage
-from nemo_curator.stages.pdf.content_classification import ContentTypeClassificationStage
-from nemo_curator.stages.pdf.deep_analysis import DeepAnalysisStage
+from nemo_curator.stages.pdf.content_routing import ContentRoutingStage
 from nemo_curator.stages.pdf.image_conversion import PDFToImageStage
-from nemo_curator.stages.pdf.image_extraction import ImageExtractionStage
 from nemo_curator.stages.pdf.layout_detection import LayoutDetectionStage
-from nemo_curator.stages.pdf.table_extraction import TableExtractionStage
-from nemo_curator.stages.pdf.text_extraction import TextExtractionStage
+from nemo_curator.stages.pdf.text_assembly import TextAssemblyStage
+from nemo_curator.stages.pdf.visual_analysis import VisualAnalysisStage
 
 __all__ = [
-    "PDFToImageStage",
+    "ContentRoutingStage",
     "LayoutDetectionStage",
-    "BoundingBoxExtractionStage",
-    "ContentTypeClassificationStage",
-    "TableExtractionStage",
-    "TextExtractionStage",
-    "ImageExtractionStage",
-    "DeepAnalysisStage",
+    "PDFToImageStage",
+    "TextAssemblyStage",
+    "VisualAnalysisStage",
 ]
