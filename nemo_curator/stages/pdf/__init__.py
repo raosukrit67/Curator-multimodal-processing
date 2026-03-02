@@ -17,7 +17,7 @@
 from nemo_curator.stages.pdf.content_routing import ContentRoutingStage
 from nemo_curator.stages.pdf.image_conversion import PDFToImageStage
 from nemo_curator.stages.pdf.layout_detection import LayoutDetectionStage
-from nemo_curator.stages.pdf.text_assembly import TextAssemblyStage
+from nemo_curator.stages.pdf.postprocess import TextAssemblyStage
 from nemo_curator.stages.pdf.visual_analysis import VisualAnalysisStage
 
 __all__ = [

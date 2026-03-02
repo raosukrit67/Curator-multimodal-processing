@@ -13,17 +13,17 @@ Nemotron Parse is a specialized encoder-decoder VLM (~885M params) that simultan
 
 ### Extraction Pipeline Stages
 
-The extraction pipeline (`2_run_extraction.py`) has 7 stages:
+The extraction pipeline (`1_run_extraction.py`) has 7 stages:
 
 | # | Stage | Description | Resources |
 |---|-------|-------------|-----------|
-| 1 | PDFReaderStage | Read PDF paths from JSONL manifest | 1 CPU |
+| 1 | JsonlReader | Read PDF paths from JSONL manifest | 1 CPU |
 | 2 | PDFToImageStage | Render PDF pages as 300 DPI images | 1 CPU |
 | 3 | LayoutDetectionStage | Nemotron Parse: OCR + layout + text extraction | 1 CPU, 1 GPU (16GB) |
 | 4 | ContentRoutingStage | Route text regions direct, visual regions to VL | 1 CPU |
 | 5 | VisualAnalysisStage | Nemotron Nano VL: describe visual content | 1 CPU, 1 GPU (24GB) |
 | 6 | TextAssemblyStage | Combine all modalities into structured JSON | 0.5 CPU |
-| 7 | PDFWriterStage | Write results to JSONL | 1 CPU |
+| 7 | JsonlWriter | Write results to output directory | 1 CPU |
 
 ### Data Flow
 
@@ -52,15 +52,14 @@ PDF Page Image (300 DPI)
 
 ```
 tutorials/pdf_processing/
-├── datasets.json            # PDF source configs (URLs for download)
-├── 0_download.py            # Download PDFs from URLs (optional, skip if you have local PDFs)
-├── 1_prepare_data.py        # Create pdf_files.jsonl from a PDF directory
-├── 2_run_extraction.py      # Main 7-stage extraction pipeline (GPU)
-├── 3_remove_duplicates.py   # Fuzzy deduplication (MinHash + LSH)
-├── 4_run_quality_filters.py # Q&A quality filtering
-├── visualize_layout.py      # Visualize Parse layout detection with colored bboxes
-├── visualize_extraction.py  # Side-by-side and heatmap visualization of extraction
-└── data/raw/pdfs/           # Sample NVIDIA datasheets (5 PDFs included)
+├── datasets.json                    # PDF source configs (URLs for download)
+├── 0_download_and_prepare_data.py   # Download PDFs or scan local dir → JSONL manifest
+├── 1_run_extraction.py              # Main extraction pipeline (GPU)
+├── 2_remove_duplicates.py           # Fuzzy + optional semantic deduplication
+├── 3_run_quality_filters.py         # Q&A quality filtering
+├── visualize_layout.py              # Visualize Parse layout detection with colored bboxes
+├── visualize_extraction.py          # Side-by-side and heatmap visualization of extraction
+└── data/raw/pdfs/                   # Sample NVIDIA datasheets (5 PDFs included)
 ```
 
 ### Two Paths to Extraction
@@ -71,22 +70,24 @@ Path A (have URLs):                     Path B (have local PDFs):
   datasets.json                           /your/pdf/directory/
        │                                         │
        ▼                                         │
-  0_download.py                                  │
-       │                                         │
-       ▼                                         ▼
-  data/raw/pdfs/  ──────────────►  1_prepare_data.py
-                                         │
-                                         ▼
-                                   pdf_files.jsonl
-                                         │
-                                         ▼
-                                   2_run_extraction.py  ──►  extracted_data.jsonl
-                                         │
-                                         ▼
-                                   3_remove_duplicates.py  ──►  deduplicated_data.jsonl
-                                         │
-                                         ▼
-                                   4_run_quality_filters.py  ──►  filtered_data.jsonl
+  0_download_and_prepare_data.py                  │
+       │  (--dataset NVIDIA_DATASHEETS)           │
+       │                                          │
+       ▼                                          ▼
+  downloads PDFs + writes manifest    0_download_and_prepare_data.py --pdf-dir /your/pdfs
+                                                  │
+                   ┌──────────────────────────────┘
+                   ▼
+             pdf_files.jsonl
+                   │
+                   ▼
+             1_run_extraction.py  ──►  data/extracted/*.jsonl
+                   │
+                   ▼
+             2_remove_duplicates.py  ──►  data/dedup/*.jsonl
+                   │
+                   ▼
+             3_run_quality_filters.py  ──►  data/filtered/*.jsonl
 ```
 
 ## Setup
@@ -115,24 +116,25 @@ GPU memory estimates:
 
 ## Usage
 
-### Step 0: Download PDFs (optional)
+### Step 0: Download PDFs and Prepare Manifest
 
-Skip this step if you already have PDF files locally.
-
-PDF URL sources are configured in `datasets.json`. Five NVIDIA hardware datasheets are included as sample data.
+This step either downloads PDFs from configured URL sources or scans a local directory, then writes a JSONL manifest for the extraction pipeline.
 
 ```bash
 # List available datasets
-python 0_download.py --list
+python 0_download_and_prepare_data.py --list
 
-# Download the default dataset
-python 0_download.py --dataset NVIDIA_DATASHEETS
+# Download from configured URL source (writes manifest automatically)
+python 0_download_and_prepare_data.py --dataset NVIDIA_DATASHEETS
+
+# Use local PDFs instead (no download, no Ray needed)
+python 0_download_and_prepare_data.py --pdf-dir /path/to/your/pdfs
 
 # Download to a custom directory
-python 0_download.py --output-dir /data/my_pdfs
+python 0_download_and_prepare_data.py --dataset NVIDIA_DATASHEETS --output-dir /data/my_pdfs
 
 # Test with fewer files
-python 0_download.py --max-files 2
+python 0_download_and_prepare_data.py --dataset NVIDIA_DATASHEETS --max-files 2
 ```
 
 To add a custom PDF source, edit `datasets.json`:
@@ -146,22 +148,10 @@ To add a custom PDF source, edit `datasets.json`:
 }
 ```
 
-### Step 1: Prepare Data
-
-Create a JSONL manifest from your PDF directory. Both paths (downloaded or local) converge here.
+### Step 1: Extract Multimodal Content
 
 ```bash
-# From downloaded PDFs (default directory)
-python 1_prepare_data.py
-
-# From your own PDF directory
-python 1_prepare_data.py --pdf-dir /path/to/your/pdfs
-```
-
-### Step 2: Extract Multimodal Content
-
-```bash
-python 2_run_extraction.py --input data/raw/pdf_files.jsonl --output data/extracted/extracted_data.jsonl
+python 1_run_extraction.py --input data/raw/pdf_files.jsonl --output data/extracted/
 ```
 
 Options:
@@ -178,10 +168,10 @@ Prompts are defined in `nemo_curator/utils/prompts.py` as named constants. The p
 
 ```bash
 # Use layout-only mode (no text extraction, faster)
-python 2_run_extraction.py --parse-prompt NEMOTRON_PARSE_LAYOUT_ONLY_PROMPT
+python 1_run_extraction.py --parse-prompt NEMOTRON_PARSE_LAYOUT_ONLY_PROMPT
 
 # Use a literal prompt string
-python 2_run_extraction.py --parse-prompt "</s><s><predict_bbox><output_markdown>"
+python 1_run_extraction.py --parse-prompt "</s><s><predict_bbox><output_markdown>"
 ```
 
 VL prompts (for describing pictures, figures, charts) can be overridden programmatically when constructing the pipeline:
@@ -204,7 +194,7 @@ VisualAnalysisStage(
 )
 ```
 
-### Step 3: Deduplicate
+### Step 2: Deduplicate
 
 Two stages of deduplication, run in sequence:
 
@@ -214,23 +204,23 @@ Two stages of deduplication, run in sequence:
 | **Semantic dedup** | Embeddings + clustering | Documents that say the same thing differently |
 
 ```bash
-# Run both (default, needs GPU for embedding generation)
-python 3_remove_duplicates.py
+# Run fuzzy dedup (default)
+python 2_remove_duplicates.py --input data/extracted/ --output data/dedup/
 
-# Fuzzy dedup only (no GPU required)
-python 3_remove_duplicates.py --skip-semantic
+# Also run semantic dedup (needs GPU for embedding generation)
+python 2_remove_duplicates.py --input data/extracted/ --output data/dedup/ --semantic
 
-# Custom semantic dedup parameters
-python 3_remove_duplicates.py --embedding-model intfloat/e5-base-v2 \
-                              --n-clusters 20 --sem-eps 0.1
+# Custom dedup parameters
+python 2_remove_duplicates.py --input data/extracted/ --output data/dedup/ \
+                              --char-ngrams 24 --num-bands 20
 ```
 
-### Step 4: Quality Filter for Q&A Curation
+### Step 3: Quality Filter for Q&A Curation
 
 Filters are designed for building Q&A datasets from PDF content:
 
 ```bash
-python 4_run_quality_filters.py --input data/extracted/extracted_data.jsonl --output data/filtered/filtered_data.jsonl
+python 3_run_quality_filters.py --input data/extracted/ --output data/filtered/
 ```
 
 The pipeline applies three filters:
@@ -245,7 +235,7 @@ Parameters: `--min-extraction-ratio`, `--min-answer-length`, `--min-qa-pages`
 
 ## Output Format
 
-The extraction pipeline produces JSONL with one JSON object per PDF:
+The extraction pipeline produces JSONL files in the output directory. Each line contains one document:
 
 ```json
 {
@@ -264,9 +254,12 @@ The extraction pipeline produces JSONL with one JSON object per PDF:
       ],
       "full_text": "Introduction\n\nThe extracted body text...\n\n[Picture: Bar chart showing...]"
     }
-  ]
+  ],
+  "text": "Introduction\n\nThe extracted body text...\n\n[Picture: Bar chart showing...]"
 }
 ```
+
+The `text` column is a flat concatenation of `full_text` from all pages, suitable for deduplication. The `pages` column contains the full structured extraction with bounding boxes.
 
 Bounding boxes are `[left, top, right, bottom]` in pixel coordinates (at the rendered DPI).
 

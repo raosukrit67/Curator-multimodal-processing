@@ -19,7 +19,7 @@ import json
 import pandas as pd
 import pytest
 
-from nemo_curator.stages.pdf.text_assembly import TextAssemblyStage
+from nemo_curator.stages.pdf.postprocess import TextAssemblyStage
 from nemo_curator.tasks import DocumentBatch
 
 
@@ -66,12 +66,11 @@ class TestTextAssemblyStage:
         batch = DocumentBatch(task_id="test", dataset_name="test", data=df)
 
         result = stage.process(batch)
-        assembled = json.loads(result.to_pandas()["assembled_content"].iloc[0])
+        pages = json.loads(result.to_pandas()["pages"].iloc[0])
 
-        assert "pages" in assembled
-        assert len(assembled["pages"]) == 1
+        assert len(pages) == 1
 
-        page = assembled["pages"][0]
+        page = pages[0]
         assert page["page_number"] == 0
 
         # Text blocks
@@ -98,8 +97,8 @@ class TestTextAssemblyStage:
         batch = DocumentBatch(task_id="test", dataset_name="test", data=df)
 
         result = stage.process(batch)
-        assembled = json.loads(result.to_pandas()["assembled_content"].iloc[0])
-        assert assembled == {"pages": []}
+        pages = json.loads(result.to_pandas()["pages"].iloc[0])
+        assert pages == []
 
     def test_no_vl_results(self):
         """Assembly should work even when VL model returned no results."""
@@ -122,9 +121,76 @@ class TestTextAssemblyStage:
         batch = DocumentBatch(task_id="test", dataset_name="test", data=df)
 
         result = stage.process(batch)
-        assembled = json.loads(result.to_pandas()["assembled_content"].iloc[0])
+        pages = json.loads(result.to_pandas()["pages"].iloc[0])
 
-        page = assembled["pages"][0]
+        page = pages[0]
         assert len(page["text_blocks"]) == 1
         assert len(page["figures"]) == 1
         assert page["figures"][0]["description"] == ""  # No VL description
+
+    def test_produces_text_column(self, sample_routed_and_analysis):
+        """TextAssemblyStage should produce a flat 'text' column for dedup."""
+        stage = TextAssemblyStage()
+
+        df = pd.DataFrame({
+            "pdf_path": ["test.pdf"],
+            "routed_content": [sample_routed_and_analysis["routed_content"]],
+            "analysis_results": [sample_routed_and_analysis["analysis_results"]],
+        })
+        batch = DocumentBatch(task_id="test", dataset_name="test", data=df)
+
+        result = stage.process(batch)
+        result_df = result.to_pandas()
+
+        assert "text" in result_df.columns
+        text = result_df["text"].iloc[0]
+        assert "Title" in text
+        assert "Body text" in text
+        assert "architecture" in text
+
+    def test_produces_pages_column(self, sample_routed_and_analysis):
+        """TextAssemblyStage should produce a 'pages' column (JSON string)."""
+        stage = TextAssemblyStage()
+
+        df = pd.DataFrame({
+            "pdf_path": ["test.pdf"],
+            "routed_content": [sample_routed_and_analysis["routed_content"]],
+            "analysis_results": [sample_routed_and_analysis["analysis_results"]],
+        })
+        batch = DocumentBatch(task_id="test", dataset_name="test", data=df)
+
+        result = stage.process(batch)
+        result_df = result.to_pandas()
+
+        assert "pages" in result_df.columns
+        pages = json.loads(result_df["pages"].iloc[0])
+        assert len(pages) == 1
+        assert pages[0]["page_number"] == 0
+
+    def test_drops_intermediate_columns(self, sample_routed_and_analysis):
+        """TextAssemblyStage should drop intermediate columns."""
+        stage = TextAssemblyStage()
+
+        df = pd.DataFrame({
+            "pdf_path": ["test.pdf"],
+            "page_images": ["[img_data]"],
+            "layout_regions": ["[layout_data]"],
+            "routed_content": [sample_routed_and_analysis["routed_content"]],
+            "analysis_results": [sample_routed_and_analysis["analysis_results"]],
+        })
+        batch = DocumentBatch(task_id="test", dataset_name="test", data=df)
+
+        result = stage.process(batch)
+        result_df = result.to_pandas()
+
+        # Intermediate columns should be dropped
+        assert "page_images" not in result_df.columns
+        assert "layout_regions" not in result_df.columns
+        assert "routed_content" not in result_df.columns
+        assert "analysis_results" not in result_df.columns
+        assert "assembled_content" not in result_df.columns
+
+        # Clean output columns should remain
+        assert "pdf_path" in result_df.columns
+        assert "pages" in result_df.columns
+        assert "text" in result_df.columns

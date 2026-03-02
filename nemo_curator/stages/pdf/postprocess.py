@@ -15,7 +15,8 @@
 """Stage for assembling final structured output from all extraction modalities.
 
 Combines text extracted by Nemotron Parse with visual descriptions from
-Nemotron Nano VL into a unified per-page JSON structure.
+Nemotron Nano VL into a unified per-page JSON structure. Also produces
+a flat ``text`` column for downstream dedup and drops intermediate columns.
 """
 
 import json
@@ -33,24 +34,27 @@ class TextAssemblyStage(ProcessingStage[DocumentBatch, DocumentBatch]):
     Merges text regions (from Parse) and visual analyses (from VL model)
     into a unified per-page structure, organized by content type.
 
-    Output format per document:
-    {
-        "pages": [
-            {
-                "page_number": 0,
-                "text_blocks": [{"class_name": "Text", "bbox": [...], "text": "..."}],
-                "tables": [{"bbox": [...], "latex": "...", "description": "..."}],
-                "figures": [{"bbox": [...], "class_name": "Picture", "description": "..."}],
-                "full_text": "concatenated text in reading order"
-            }
-        ]
-    }
+    After assembly, this stage also:
+    - Drops intermediate columns (page_images, layout_regions,
+      routed_content, analysis_results) to keep the output clean.
+    - Adds a ``pages`` column (JSON string of the assembled pages).
+    - Adds a ``text`` column (flat string of concatenated full_text from
+      all pages) so downstream dedup stages can read it directly.
+
+    Output DataFrame columns: ``pdf_path``, ``pages``, ``text``.
 
     Args:
         routed_content_field: Column with routed content.
         analysis_results_field: Column with VL analysis results.
         output_field: Column for storing assembled output.
     """
+
+    _INTERMEDIATE_COLUMNS = (
+        "page_images",
+        "layout_regions",
+        "routed_content",
+        "analysis_results",
+    )
 
     def __init__(
         self,
@@ -70,13 +74,9 @@ class TextAssemblyStage(ProcessingStage[DocumentBatch, DocumentBatch]):
         return ["data"], [self.routed_content_field, self.analysis_results_field]
 
     def outputs(self) -> tuple[list[str], list[str]]:
-        return ["data"], [
-            self.routed_content_field,
-            self.analysis_results_field,
-            self.output_field,
-        ]
+        return ["data"], ["pdf_path", "pages", "text"]
 
-    def process(self, batch: DocumentBatch) -> DocumentBatch:
+    def process(self, batch: DocumentBatch) -> DocumentBatch:  # noqa: C901, PLR0912, PLR0915
         df = batch.to_pandas()
         assembled_list = []
 
@@ -171,11 +171,34 @@ class TextAssemblyStage(ProcessingStage[DocumentBatch, DocumentBatch]):
 
                 assembled_list.append(json.dumps({"pages": pages}))
 
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.error(f"Text assembly failed: {e}")
                 assembled_list.append(json.dumps({"pages": []}))
 
         df[self.output_field] = assembled_list
+
+        # Build clean output: pages (JSON string) and text (flat string)
+        pages_list = []
+        text_list = []
+        for assembled_json in assembled_list:
+            assembled = json.loads(assembled_json)
+            pages = assembled.get("pages", [])
+            pages_list.append(json.dumps(pages))
+            full_texts = [
+                p.get("full_text", "") for p in pages if p.get("full_text")
+            ]
+            text_list.append("\n\n".join(full_texts))
+
+        df["pages"] = pages_list
+        df["text"] = text_list
+
+        # Drop intermediate columns
+        cols_to_drop = [
+            c for c in self._INTERMEDIATE_COLUMNS if c in df.columns
+        ]
+        if self.output_field in df.columns:
+            cols_to_drop.append(self.output_field)
+        df = df.drop(columns=cols_to_drop, errors="ignore")
 
         return DocumentBatch(
             task_id=batch.task_id,

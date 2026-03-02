@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,32 +20,28 @@ Extracts text, tables, and visual content from PDF documents using two models:
 2. Nemotron Nano 12B VL - Visual content description (pictures, figures, charts)
 
 Pipeline Stages:
-1. PDFReaderStage      - Read PDF paths from JSONL manifest
+1. JsonlReader         - Read PDF paths from JSONL manifest
 2. PDFToImageStage     - Convert PDF pages to 300 DPI images
 3. LayoutDetectionStage - Nemotron Parse: OCR + layout + text extraction
 4. ContentRoutingStage  - Route regions: text → direct, visual → VL model
 5. VisualAnalysisStage  - Nemotron Nano VL: describe visual content
 6. TextAssemblyStage    - Combine all modalities into structured JSON
-7. PDFWriterStage       - Write results to JSONL
+7. JsonlWriter          - Write results to output directory
 
 Usage:
-    python 2_run_extraction.py --input data/raw/pdf_files.jsonl --output data/extracted/
+    python 1_run_extraction.py --input data/raw/pdf_files.jsonl --output data/extracted/
 
 See --help for all options.
 """
 
 import argparse
-import json
 import os
-from pathlib import Path
 
-import pandas as pd
 from loguru import logger
 
 from nemo_curator.backends.xenna import XennaExecutor
 from nemo_curator.core.client import RayClient
 from nemo_curator.pipeline import Pipeline
-from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.stages.pdf import (
     ContentRoutingStage,
     LayoutDetectionStage,
@@ -54,88 +49,9 @@ from nemo_curator.stages.pdf import (
     TextAssemblyStage,
     VisualAnalysisStage,
 )
-from nemo_curator.stages.resources import Resources
-from nemo_curator.tasks import DocumentBatch, _EmptyTask
+from nemo_curator.stages.text.io.reader.jsonl import JsonlReader
+from nemo_curator.stages.text.io.writer.jsonl import JsonlWriter
 from nemo_curator.utils import prompts
-
-
-class PDFReaderStage(ProcessingStage[_EmptyTask, DocumentBatch]):
-    """Read PDF paths from JSONL manifest file."""
-
-    def __init__(self, input_path: str):
-        self.input_path = input_path
-        self.name = "pdf_reader"
-        self.resources = Resources(cpus=1.0)
-        self.batch_size = 1
-
-    def inputs(self) -> tuple[list[str], list[str]]:
-        return [], []
-
-    def outputs(self) -> tuple[list[str], list[str]]:
-        return ["data"], ["pdf_path"]
-
-    def process(self, _: _EmptyTask) -> list[DocumentBatch]:
-        logger.info(f"Reading PDF manifest from {self.input_path}")
-
-        pdf_paths = []
-        with open(self.input_path) as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    entry = json.loads(line)
-                    pdf_paths.append(entry["pdf_path"])
-
-        logger.info(f"Loaded {len(pdf_paths)} PDF paths")
-
-        tasks = []
-        for i, pdf_path in enumerate(pdf_paths):
-            df = pd.DataFrame({"pdf_path": [pdf_path]})
-            task = DocumentBatch(
-                task_id=f"pdf_{i}",
-                dataset_name="pdfs",
-                data=df,
-            )
-            tasks.append(task)
-
-        return tasks
-
-
-class PDFWriterStage(ProcessingStage[DocumentBatch, DocumentBatch]):
-    """Write assembled extraction results to JSONL file."""
-
-    def __init__(self, output_path: str):
-        self.output_path = output_path
-        self.name = "pdf_writer"
-        self.resources = Resources(cpus=1.0)
-        self.batch_size = 1
-
-    def inputs(self) -> tuple[list[str], list[str]]:
-        return ["data"], ["pdf_path", "assembled_content"]
-
-    def outputs(self) -> tuple[list[str], list[str]]:
-        return [], []
-
-    def setup(self, worker_metadata=None) -> None:
-        Path(self.output_path).parent.mkdir(parents=True, exist_ok=True)
-
-    def process(self, batch: DocumentBatch) -> None:
-        df = batch.to_pandas()
-
-        for idx in range(len(df)):
-            row = df.iloc[idx]
-            pdf_path = row["pdf_path"]
-            assembled = json.loads(row.get("assembled_content", '{"pages": []}'))
-
-            output_entry = {
-                "pdf_path": pdf_path,
-                **assembled,
-            }
-
-            with open(self.output_path, "a") as f:
-                f.write(json.dumps(output_entry) + "\n")
-
-        logger.info(f"Wrote {len(df)} documents to {self.output_path}")
-        return None
 
 
 def resolve_prompt(name_or_value: str) -> str:
@@ -146,9 +62,9 @@ def resolve_prompt(name_or_value: str) -> str:
         return name_or_value
 
 
-def build_pipeline(
+def build_pipeline(  # noqa: PLR0913
     input_path: str,
-    output_path: str,
+    output_dir: str,
     parse_model: str = "nvidia/NVIDIA-Nemotron-Parse-v1.1",
     vl_model: str = "nvidia/NVIDIA-Nemotron-Nano-12B-v2-VL-BF16",
     parse_prompt: str = "NEMOTRON_PARSE_PROMPT",
@@ -161,7 +77,7 @@ def build_pipeline(
 
     Args:
         input_path: Path to JSONL manifest with PDF paths.
-        output_path: Path for output JSONL.
+        output_dir: Directory for output JSONL files.
         parse_model: Nemotron Parse model identifier.
         vl_model: Nemotron Nano VL model identifier.
         parse_prompt: Parse prompt name from prompts.py or literal string.
@@ -179,7 +95,7 @@ def build_pipeline(
     )
 
     # Stage 1: Read PDF manifest
-    pipeline.add_stage(PDFReaderStage(input_path=input_path))
+    pipeline.add_stage(JsonlReader(file_paths=input_path))
 
     # Stage 2: Convert PDFs to images
     pipeline.add_stage(PDFToImageStage(dpi=dpi))
@@ -210,11 +126,14 @@ def build_pipeline(
         )
     )
 
-    # Stage 6: Assemble all modalities
+    # Stage 6: Assemble all modalities + format output
     pipeline.add_stage(TextAssemblyStage())
 
     # Stage 7: Write results
-    pipeline.add_stage(PDFWriterStage(output_path=output_path))
+    pipeline.add_stage(JsonlWriter(
+        path=output_dir,
+        fields=["pdf_path", "pages", "text"],
+    ))
 
     return pipeline
 
@@ -233,8 +152,8 @@ def main() -> None:
     parser.add_argument(
         "--output",
         type=str,
-        default=os.path.join(os.path.dirname(__file__), "data", "extracted", "extracted_data.jsonl"),
-        help="Output JSONL path",
+        default=os.path.join(os.path.dirname(__file__), "data", "extracted"),
+        help="Output directory for JSONL files",
     )
     parser.add_argument(
         "--parse-model",
@@ -279,11 +198,6 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    # Clear output if exists
-    output_path = Path(args.output)
-    if output_path.exists():
-        output_path.unlink()
-
     logger.info("Starting PDF extraction pipeline")
     logger.info(f"Input: {args.input}")
     logger.info(f"Output: {args.output}")
@@ -292,7 +206,7 @@ def main() -> None:
 
     pipeline = build_pipeline(
         input_path=args.input,
-        output_path=args.output,
+        output_dir=args.output,
         parse_model=args.parse_model,
         vl_model=args.vl_model,
         parse_prompt=args.parse_prompt,

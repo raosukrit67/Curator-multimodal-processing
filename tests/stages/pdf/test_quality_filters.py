@@ -15,9 +15,15 @@
 """Tests for Q&A quality filter logic."""
 
 import json
+import typing
 
 import pandas as pd
 
+from nemo_curator.stages.pdf.quality_filters import (
+    BoilerplateFilter,
+    ExtractionCompletenessFilter,
+    QAReadinessFilter,
+)
 from nemo_curator.tasks import DocumentBatch
 
 
@@ -101,9 +107,9 @@ class TestExtractionCompletenessLogic:
 
 
 class TestBoilerplateLogic:
-    BOILERPLATE_CLASSES = {"Page-Header", "Page-Footer", "Index"}
+    BOILERPLATE_CLASSES: typing.ClassVar[set[str]] = {"Page-Header", "Page-Footer", "Index"}
 
-    def _is_substantive(self, page, min_blocks=1):
+    def _is_substantive(self, page, min_blocks=1) -> bool:
         if page.get("tables") or page.get("figures"):
             return True
         substantive = sum(
@@ -127,16 +133,16 @@ class TestBoilerplateLogic:
 
 
 class TestQAReadinessLogic:
-    def _page_is_qa_ready(self, page, min_answer_length=80):
+    def _page_is_qa_ready(self, page, min_answer_length=80) -> bool:
         if page.get("tables"):
             return True
         for fig in page.get("figures", []):
             if fig.get("description", "").strip():
                 return True
-        for block in page.get("text_blocks", []):
-            if len(block.get("text", "")) >= min_answer_length:
-                return True
-        return False
+        return any(
+            len(block.get("text", "")) >= min_answer_length
+            for block in page.get("text_blocks", [])
+        )
 
     def test_content_page_is_qa_ready(self):
         assert self._page_is_qa_ready(_content_page())
@@ -163,3 +169,54 @@ class TestQAReadinessLogic:
 
     def test_empty_page_is_not_qa_ready(self):
         assert not self._page_is_qa_ready(_empty_page())
+
+
+class TestExtractionCompletenessStage:
+    """Test the actual stage class processes batches correctly."""
+
+    def test_passes_good_documents(self):
+        stage = ExtractionCompletenessFilter()
+        batch = _make_batch([_content_page(), _content_page(1)])
+        result = stage.process(batch)
+        assert result.to_pandas()["extraction_ok"].iloc[0]
+
+    def test_fails_mostly_empty(self):
+        stage = ExtractionCompletenessFilter()
+        batch = _make_batch([_content_page(), _empty_page(1), _empty_page(2), _empty_page(3)])
+        result = stage.process(batch)
+        assert not result.to_pandas()["extraction_ok"].iloc[0]
+
+
+class TestBoilerplateFilterStage:
+    """Test the actual stage class processes batches correctly."""
+
+    def test_removes_boilerplate_pages(self):
+        stage = BoilerplateFilter()
+        pages = [_content_page(), _boilerplate_page(1)]
+        batch = _make_batch(pages)
+        # Need extraction_ok column as input
+        batch.to_pandas()["extraction_ok"] = True
+        df = batch.to_pandas()
+        df["extraction_ok"] = True
+        batch = DocumentBatch(task_id="test", dataset_name="test", data=df)
+
+        result = stage.process(batch)
+        result_df = result.to_pandas()
+        assert result_df["pages_removed"].iloc[0] == 1
+        kept = json.loads(result_df["pages"].iloc[0])
+        assert len(kept) == 1
+
+
+class TestQAReadinessStage:
+    """Test the actual stage class processes batches correctly."""
+
+    def test_qa_ready_document(self):
+        stage = QAReadinessFilter()
+        batch = _make_batch([_content_page()])
+        df = batch.to_pandas()
+        df["extraction_ok"] = True
+        df["pages_removed"] = 0
+        batch = DocumentBatch(task_id="test", dataset_name="test", data=df)
+
+        result = stage.process(batch)
+        assert result.to_pandas()["qa_ready"].iloc[0]
